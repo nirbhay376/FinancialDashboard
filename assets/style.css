@@ -1,0 +1,58 @@
+/* FinanceHub Pro global styles */
+:root{
+  --bg:#f8f9fa;
+  --card:#ffffff;
+  --text:#2c3e50;
+  --primary:#667eea;
+  --muted:#7f8c8d;
+}
+html,body,#root, .dash-app{
+  height:100%;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
+  background:var(--bg);
+  color:var(--text);
+  margin:0;
+}
+
+/* Top nav */
+#nav-bar{position:sticky;top:0;z-index:999}
+#nav-bar > div{border-bottom-left-radius:8px;border-bottom-right-radius:8px}
+
+/* Main container */
+#main-container{max-width:1400px;margin:0 auto}
+
+/* Cards */
+.card{background:var(--card);border-radius:12px;padding:20px;box-shadow:0 6px 18px rgba(0,0,0,0.06);border:1px solid rgba(0,0,0,0.04)}
+
+/* Feature grid */
+@media (min-width:900px){
+  .feature-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+}
+@media (max-width:899px){
+  .feature-grid{display:grid;grid-template-columns:repeat(1,1fr);gap:12px}
+}
+
+/* Buttons */
+button{font-family:inherit}
+button:focus{outline:none}
+
+/* Spinner */
+.spinner{border:4px solid rgba(0,0,0,0.06);border-left-color:var(--primary);border-radius:50%;width:36px;height:36px;margin:10px auto;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* DataTable tweaks */
+.dash-table-container .dash-table{font-size:14px}
+
+/* Footer */
+footer{padding:20px;text-align:center;color:var(--muted);font-size:13px}
+
+/* Responsive tabs and graphs */
+.dcc-Graph{width:100%}
+
+/* small adjustments for mobile inputs */
+input[type=text]{-webkit-appearance:none;appearance:none}
+
+/* Dark theme helper (applied dynamically via inline styles) */
+
+/* Improve visuals for code inserted components */
+.create-stat{padding:12px;border-radius:10px}

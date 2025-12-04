@@ -126,6 +126,48 @@ def create_feature_card(icon, title, description):
         'textAlign': 'center'
     })
 
+
+# ==================== DATA FETCH HELPERS (cached) ====================
+from functools import lru_cache
+
+
+@lru_cache(maxsize=128)
+def fetch_stock_info(ticker: str) -> dict:
+    """Fetch basic stock info via yfinance and cache results by ticker."""
+    try:
+        t = yf.Ticker(ticker)
+        return dict(t.info or {})
+    except Exception:
+        return {}
+
+
+@lru_cache(maxsize=128)
+def fetch_history(ticker: str, period: str = '1y') -> pd.DataFrame:
+    """Fetch historical price data for ticker with caching."""
+    try:
+        return yf.Ticker(ticker).history(period=period) or pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+@lru_cache(maxsize=128)
+def fetch_financials(ticker: str) -> dict:
+    """Fetch income, balance sheet and cashflow tables and cache them.
+    Returns dict with keys: income, balance, cashflow (each a DataFrame).
+    """
+    try:
+        t = yf.Ticker(ticker)
+        income = (t.financials.T if hasattr(t, 'financials') else pd.DataFrame())
+        balance = (t.balance_sheet.T if hasattr(t, 'balance_sheet') else pd.DataFrame())
+        cashflow = (t.cashflow.T if hasattr(t, 'cashflow') else pd.DataFrame())
+        return {
+            'income': income if isinstance(income, pd.DataFrame) else pd.DataFrame(),
+            'balance': balance if isinstance(balance, pd.DataFrame) else pd.DataFrame(),
+            'cashflow': cashflow if isinstance(cashflow, pd.DataFrame) else pd.DataFrame()
+        }
+    except Exception:
+        return {'income': pd.DataFrame(), 'balance': pd.DataFrame(), 'cashflow': pd.DataFrame()}
+
 def create_stat_box(label, value, colors):
     """Create a stat box for company header."""
     return html.Div([
@@ -175,6 +217,28 @@ def create_metric_card(title, value, subtitle, color, colors):
 
 # ==================== DASH APP ====================
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
+
+# Improve mobile rendering and load a web font
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+        {%favicon%}
+        {%css%}
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
 
 app.layout = html.Div([
     # Theme Store
@@ -357,9 +421,13 @@ def update_dashboard(n_clicks, ticker, theme):
             html.P(f"⏳ Fetching comprehensive data for {ticker}...", style={'marginTop': '10px'})
         ], style={'textAlign': 'center', 'color': colors['primary']})
         
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        
+        # Use cached fetch helpers to reduce repeated yfinance calls
+        info = fetch_stock_info(ticker)
+        financials = fetch_financials(ticker)
+        income = financials.get('income', pd.DataFrame())
+        balance = financials.get('balance', pd.DataFrame())
+        cashflow = financials.get('cashflow', pd.DataFrame())
+
         # Get company info
         company_name = info.get('longName', ticker)
         sector = info.get('sector', 'N/A')
@@ -373,10 +441,7 @@ def update_dashboard(n_clicks, ticker, theme):
         week_52_low = info.get('fiftyTwoWeekLow', 0)
         avg_volume = info.get('averageVolume', 0)
         
-        # Fetch financials
-        income = stock.financials.T
-        balance = stock.balance_sheet.T
-        cashflow = stock.cashflow.T
+        # (financials already populated via fetch_financials above)
         
         if income.empty and balance.empty and cashflow.empty:
             return "", f"❌ No financial data available for {ticker}", {'display': 'block'}, {'display': 'none'}, ""
@@ -400,7 +465,7 @@ def update_dashboard(n_clicks, ticker, theme):
         latest_net_income = net_income.iloc[0] if len(net_income) > 0 else np.nan
         
         # Calculate price change
-        hist = stock.history(period='1d')
+        hist = fetch_history(ticker, period='1d')
         if not hist.empty:
             prev_close = hist['Close'].iloc[-1] if len(hist) > 0 else current_price
             price_change = current_price - prev_close
@@ -938,9 +1003,8 @@ def compare_stocks(n_clicks, ticker1, ticker2, ticker3, theme):
         comparison_data = []
         
         for ticker in tickers:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            hist = stock.history(period='1y')
+            info = fetch_stock_info(ticker)
+            hist = fetch_history(ticker, period='1y')
             
             comparison_data.append({
                 'Ticker': ticker,
@@ -982,7 +1046,7 @@ def compare_stocks(n_clicks, ticker1, ticker2, ticker3, theme):
         # Create comparison chart
         fig = go.Figure()
         for ticker in tickers:
-            hist = yf.Ticker(ticker).history(period='1y')
+            hist = fetch_history(ticker, period='1y')
             normalized = (hist['Close'] / hist['Close'].iloc[0]) * 100
             fig.add_trace(go.Scatter(
                 x=hist.index,
