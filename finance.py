@@ -2,12 +2,45 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import dash
-from dash import dcc, html, Input, Output, State
+from dash import dcc, html, Input, Output, State, dash_table
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
 
-# -------------------- Helper Functions --------------------
+# ==================== CONFIGURATION ====================
+COLORS = {
+    'light': {
+        'background': '#f8f9fa',
+        'card': '#ffffff',
+        'text': '#2c3e50',
+        'primary': '#667eea',
+        'secondary': '#764ba2',
+        'success': '#2ecc71',
+        'danger': '#e74c3c',
+        'warning': '#f39c12',
+        'info': '#3498db',
+        'border': '#e1e8ed',
+        'hover': '#f0f0ff'
+    },
+    'dark': {
+        'background': '#1a1a2e',
+        'card': '#16213e',
+        'text': '#eaeaea',
+        'primary': '#667eea',
+        'secondary': '#764ba2',
+        'success': '#2ecc71',
+        'danger': '#e74c3c',
+        'warning': '#f39c12',
+        'info': '#3498db',
+        'border': '#2d3748',
+        'hover': '#2d3748'
+    }
+}
+
+# ==================== HELPER FUNCTIONS ====================
 def safe_get(df, columns):
     """Try multiple column names, return first that exists."""
     if isinstance(columns, str):
@@ -23,7 +56,7 @@ def calculate_yoy(series):
 
 def format_currency(value):
     """Format large numbers as billions/millions."""
-    if pd.isna(value):
+    if pd.isna(value) or value is None:
         return "N/A"
     abs_val = abs(value)
     sign = "-" if value < 0 else ""
@@ -36,6 +69,12 @@ def format_currency(value):
     else:
         return f"{sign}${abs_val:,.0f}"
 
+def format_number(value, decimals=2):
+    """Format numbers with proper decimal places."""
+    if pd.isna(value) or value is None:
+        return "N/A"
+    return f"{value:,.{decimals}f}"
+
 def calculate_cagr(series):
     """Calculate Compound Annual Growth Rate."""
     if len(series) < 2:
@@ -47,556 +86,935 @@ def calculate_cagr(series):
         return np.nan
     return (((last_val / first_val) ** (1/years)) - 1) * 100
 
-# -------------------- Dash App --------------------
-app = dash.Dash(__name__)
+def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
+    """Calculate Sharpe Ratio."""
+    if len(returns) < 2:
+        return np.nan
+    excess_returns = returns - risk_free_rate/252
+    return np.sqrt(252) * excess_returns.mean() / excess_returns.std()
 
-app.layout = html.Div(style={
-    "fontFamily": "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", 
-    "background": "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-    "minHeight": "100vh",
-    "padding": "20px"
-}, children=[
-    html.Div(style={
-        "maxWidth": "1600px", 
-        "margin": "0 auto", 
-        "backgroundColor": "white", 
-        "padding": "40px", 
-        "borderRadius": "20px", 
-        "boxShadow": "0 20px 60px rgba(0,0,0,0.3)"
-    }, children=[
-        # Header with gradient
-        html.Div([
-            html.H1("📊 Advanced Financial Analytics Dashboard", style={
-                "background": "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-                "WebkitBackgroundClip": "text",
-                "WebkitTextFillColor": "transparent",
-                "textAlign": "center",
-                "fontSize": "42px",
-                "fontWeight": "bold",
-                "marginBottom": "10px"
-            }),
-            html.P("Real-time financial analysis powered by Yahoo Finance", style={
-                "textAlign": "center",
-                "color": "#7f8c8d",
-                "fontSize": "16px",
-                "marginBottom": "30px"
+def calculate_sortino_ratio(returns, risk_free_rate=0.02):
+    """Calculate Sortino Ratio."""
+    if len(returns) < 2:
+        return np.nan
+    excess_returns = returns - risk_free_rate/252
+    downside_returns = excess_returns[excess_returns < 0]
+    if len(downside_returns) == 0:
+        return np.nan
+    return np.sqrt(252) * excess_returns.mean() / downside_returns.std()
+
+def calculate_max_drawdown(prices):
+    """Calculate maximum drawdown."""
+    cumulative = (1 + prices.pct_change()).cumprod()
+    running_max = cumulative.cummax()
+    drawdown = (cumulative - running_max) / running_max
+    return drawdown.min() * 100
+
+def create_feature_card(icon, title, description):
+    """Create feature card for welcome screen."""
+    return html.Div([
+        html.Div(icon, style={'fontSize': '48px', 'marginBottom': '15px'}),
+        html.H3(title, style={'marginBottom': '10px', 'fontSize': '20px'}),
+        html.P(description, style={'opacity': '0.7', 'fontSize': '14px', 'lineHeight': '1.6'})
+    ], style={
+        'padding': '30px',
+        'borderRadius': '15px',
+        'boxShadow': '0 4px 20px rgba(0,0,0,0.1)',
+        'transition': 'transform 0.3s, box-shadow 0.3s',
+        'cursor': 'default',
+        'background': 'white',
+        'textAlign': 'center'
+    })
+
+def create_stat_box(label, value, colors):
+    """Create a stat box for company header."""
+    return html.Div([
+        html.P(label, style={'fontSize': '12px', 'opacity': '0.6', 'marginBottom': '5px', 'textTransform': 'uppercase', 'letterSpacing': '1px'}),
+        html.P(value, style={'fontSize': '20px', 'fontWeight': 'bold', 'margin': '0'})
+    ], style={
+        'padding': '15px',
+        'background': colors['background'],
+        'borderRadius': '10px',
+        'border': f'1px solid {colors["border"]}'
+    })
+
+def create_metric_card(title, value, subtitle, color, colors):
+    """Create an enhanced metric card with theme support."""
+    return html.Div([
+        html.Div(title, style={
+            'fontSize': '14px',
+            'color': colors['text'],
+            'opacity': '0.7',
+            'marginBottom': '10px',
+            'fontWeight': '600',
+            'textTransform': 'uppercase',
+            'letterSpacing': '0.5px'
+        }),
+        html.Div(value, style={
+            'fontSize': '32px',
+            'color': color,
+            'fontWeight': 'bold',
+            'marginBottom': '8px',
+            'lineHeight': '1'
+        }),
+        html.Div(subtitle, style={
+            'fontSize': '12px',
+            'color': colors['text'],
+            'opacity': '0.5'
+        })
+    ], style={
+        'padding': '25px',
+        'backgroundColor': colors['card'],
+        'borderRadius': '15px',
+        'boxShadow': '0 4px 15px rgba(0,0,0,0.08)',
+        'transition': 'all 0.3s',
+        'border': f'2px solid {color}20',
+        'position': 'relative',
+        'overflow': 'hidden'
+    })
+
+# ==================== DASH APP ====================
+app = dash.Dash(__name__, suppress_callback_exceptions=True)
+
+app.layout = html.Div([
+    # Theme Store
+    dcc.Store(id='theme-store', data='light'),
+    
+    # Main Container
+    html.Div(id='main-container', children=[
+        # Top Navigation Bar
+        html.Div(id='nav-bar', children=[
+            html.Div([
+                html.Div([
+                    html.H2("📊 FinanceHub Pro", style={'margin': '0', 'color': 'white', 'fontSize': '24px'}),
+                    html.P("Advanced Financial Intelligence Platform", style={'margin': '0', 'fontSize': '12px', 'opacity': '0.8'})
+                ]),
+                html.Div([
+                    html.Button("🌙", id='theme-toggle', n_clicks=0, style={
+                        'padding': '10px 15px',
+                        'border': 'none',
+                        'borderRadius': '8px',
+                        'cursor': 'pointer',
+                        'fontSize': '20px',
+                        'marginRight': '10px',
+                        'background': 'rgba(255,255,255,0.2)',
+                        'transition': 'all 0.3s'
+                    }),
+                    dcc.Input(
+                        id="ticker-input",
+                        type="text",
+                        placeholder="Enter ticker (e.g., AAPL)",
+                        style={
+                            'padding': '12px 20px',
+                            'border': 'none',
+                            'borderRadius': '8px',
+                            'fontSize': '14px',
+                            'width': '250px',
+                            'marginRight': '10px'
+                        }
+                    ),
+                    html.Button("🔍 Analyze", id="search-button", n_clicks=0, style={
+                        'padding': '12px 30px',
+                        'background': 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                        'color': 'white',
+                        'border': 'none',
+                        'borderRadius': '8px',
+                        'cursor': 'pointer',
+                        'fontWeight': 'bold',
+                        'fontSize': '14px',
+                        'boxShadow': '0 4px 15px rgba(0,0,0,0.2)',
+                        'transition': 'all 0.3s'
+                    })
+                ], style={'display': 'flex', 'alignItems': 'center'})
+            ], style={
+                'display': 'flex',
+                'justifyContent': 'space-between',
+                'alignItems': 'center',
+                'padding': '20px 40px',
+                'background': 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                'color': 'white',
+                'boxShadow': '0 4px 20px rgba(0,0,0,0.1)'
             })
         ]),
         
-        # Search Section with animation
-        html.Div([
-            html.Div([
-                dcc.Input(
-                    id="ticker-input", 
-                    type="text", 
-                    placeholder="Enter ticker (e.g., AAPL, MSFT, NVDA)",
-                    style={
-                        "width": "350px", 
-                        "padding": "15px 20px", 
-                        "marginRight": "15px", 
-                        "border": "2px solid #667eea", 
-                        "borderRadius": "10px",
-                        "fontSize": "16px",
-                        "outline": "none",
-                        "transition": "all 0.3s"
-                    }
-                ),
-                html.Button("🔍 Analyze", id="search-button", n_clicks=0, 
-                    style={
-                        "padding": "15px 40px", 
-                        "background": "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-                        "color": "white", 
-                        "border": "none", 
-                        "borderRadius": "10px", 
-                        "cursor": "pointer", 
-                        "fontWeight": "bold",
-                        "fontSize": "16px",
-                        "boxShadow": "0 4px 15px rgba(102, 126, 234, 0.4)",
-                        "transition": "all 0.3s"
-                    }
-                ),
-            ], style={"display": "flex", "justifyContent": "center", "alignItems": "center"})
-        ], style={"marginBottom": "40px"}),
-        
         # Messages
-        html.Div(id="loading-message", style={"textAlign": "center", "color": "#667eea", "fontSize": "18px", "marginBottom": "10px", "fontWeight": "500"}),
-        html.Div(id="error-message", style={"textAlign": "center", "color": "#e74c3c", "fontSize": "16px", "marginBottom": "20px"}),
+        html.Div([
+            html.Div(id="loading-message", style={'textAlign': 'center', 'padding': '10px', 'fontSize': '16px'}),
+            html.Div(id="error-message", style={'textAlign': 'center', 'padding': '10px', 'fontSize': '16px', 'color': '#e74c3c'}),
+        ]),
         
-        # Company Info Header
-        html.Div(id="company-header"),
+        # Main Content Area
+        html.Div(id='content-area', style={'padding': '20px 40px'}, children=[
+            # Welcome Screen
+            html.Div(id='welcome-screen', children=[
+                html.Div([
+                    html.H1("Welcome to FinanceHub Pro", style={'fontSize': '48px', 'marginBottom': '20px', 'textAlign': 'center'}),
+                    html.P("Your comprehensive financial analysis platform with advanced metrics, real-time data, and AI-powered insights", 
+                           style={'fontSize': '18px', 'textAlign': 'center', 'marginBottom': '40px', 'opacity': '0.8'}),
+                    html.Div([
+                        create_feature_card("📊", "Advanced Analytics", "Deep dive into financial statements with 40+ metrics"),
+                        create_feature_card("📈", "Technical Analysis", "Charts, indicators, and price action analysis"),
+                        create_feature_card("🎯", "Valuation Models", "DCF, multiples, and comparative analysis"),
+                        create_feature_card("🔄", "Portfolio Tools", "Compare stocks and build watch lists"),
+                        create_feature_card("📰", "News & Events", "Real-time news and earnings calendar"),
+                        create_feature_card("🤖", "AI Insights", "Machine learning predictions and analysis"),
+                    ], style={'display': 'grid', 'gridTemplateColumns': 'repeat(3, 1fr)', 'gap': '20px', 'marginTop': '40px'})
+                ], style={'maxWidth': '1400px', 'margin': '100px auto', 'textAlign': 'center'})
+            ])
+        ]),
         
-        # Tabs for different analyses
-        html.Div(id="analysis-tabs")
+        # Stock Data Content (Hidden initially)
+        html.Div(id='stock-content', style={'display': 'none'}, children=[
+            # Company Header
+            html.Div(id="company-header"),
+            
+            # Navigation Tabs
+            html.Div([
+                dcc.Tabs(id="main-tabs", value='overview', children=[
+                    dcc.Tab(label='📊 Overview', value='overview'),
+                    dcc.Tab(label='💰 Financials', value='financials'),
+                    dcc.Tab(label='📈 Technical', value='technical'),
+                    dcc.Tab(label='🎯 Valuation', value='valuation'),
+                    dcc.Tab(label='📊 Comparison', value='comparison'),
+                    dcc.Tab(label='📰 News', value='news'),
+                ], style={'marginBottom': '20px'})
+            ]),
+            
+            # Tab Content
+            html.Div(id='tab-content')
+        ])
     ])
 ])
 
+def create_feature_card(icon, title, description):
+    """Create feature card for welcome screen."""
+    return html.Div([
+        html.Div(icon, style={'fontSize': '48px', 'marginBottom': '15px'}),
+        html.H3(title, style={'marginBottom': '10px'}),
+        html.P(description, style={'opacity': '0.7', 'fontSize': '14px'})
+    ], style={
+        'padding': '30px',
+        'borderRadius': '15px',
+        'boxShadow': '0 4px 20px rgba(0,0,0,0.1)',
+        'transition': 'transform 0.3s',
+        'cursor': 'default',
+        'background': 'white'
+    })
+
+# ==================== THEME TOGGLE ====================
+@app.callback(
+    [Output('theme-store', 'data'),
+     Output('theme-toggle', 'children')],
+    [Input('theme-toggle', 'n_clicks')],
+    [State('theme-store', 'data')]
+)
+def toggle_theme(n_clicks, current_theme):
+    if n_clicks == 0:
+        return 'light', '🌙'
+    new_theme = 'dark' if current_theme == 'light' else 'light'
+    icon = '☀️' if new_theme == 'dark' else '🌙'
+    return new_theme, icon
+
+@app.callback(
+    Output('main-container', 'style'),
+    [Input('theme-store', 'data')]
+)
+def update_theme(theme):
+    colors = COLORS[theme]
+    return {
+        'fontFamily': "'Inter', 'Segoe UI', sans-serif",
+        'backgroundColor': colors['background'],
+        'color': colors['text'],
+        'minHeight': '100vh',
+        'transition': 'all 0.3s'
+    }
+
+# ==================== MAIN CALLBACK ====================
 @app.callback(
     [
         Output("loading-message", "children"),
         Output("error-message", "children"),
+        Output("welcome-screen", "style"),
+        Output("stock-content", "style"),
         Output("company-header", "children"),
-        Output("analysis-tabs", "children"),
     ],
     [Input("search-button", "n_clicks")],
-    [State("ticker-input", "value")]
+    [State("ticker-input", "value"),
+     State("theme-store", "data")]
 )
-def update_dashboard(n_clicks, ticker):
+def update_dashboard(n_clicks, ticker, theme):
+    colors = COLORS[theme]
+    
     if not n_clicks or not ticker:
-        return "", "", "", ""
+        return "", "", {'display': 'block'}, {'display': 'none'}, ""
     
     ticker = ticker.upper().strip()
     
     try:
+        # Loading message
+        loading_msg = html.Div([
+            html.Div(className="spinner"),
+            html.P(f"⏳ Fetching comprehensive data for {ticker}...", style={'marginTop': '10px'})
+        ], style={'textAlign': 'center', 'color': colors['primary']})
+        
         stock = yf.Ticker(ticker)
+        info = stock.info
         
         # Get company info
-        info = stock.info
         company_name = info.get('longName', ticker)
         sector = info.get('sector', 'N/A')
         industry = info.get('industry', 'N/A')
         market_cap = info.get('marketCap', 0)
-        current_price = info.get('currentPrice', 0)
+        current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+        pe_ratio = info.get('trailingPE', 0)
+        dividend_yield = info.get('dividendYield', 0)
+        beta = info.get('beta', 0)
+        week_52_high = info.get('fiftyTwoWeekHigh', 0)
+        week_52_low = info.get('fiftyTwoWeekLow', 0)
+        avg_volume = info.get('averageVolume', 0)
         
-        # Fetch financial statements
+        # Fetch financials
         income = stock.financials.T
         balance = stock.balance_sheet.T
         cashflow = stock.cashflow.T
         
         if income.empty and balance.empty and cashflow.empty:
-            return "", f"❌ No financial data available for {ticker}. Please verify the ticker symbol.", "", ""
+            return "", f"❌ No financial data available for {ticker}", {'display': 'block'}, {'display': 'none'}, ""
         
         # Convert to numeric
         income = income.apply(pd.to_numeric, errors='coerce')
         balance = balance.apply(pd.to_numeric, errors='coerce')
         cashflow = cashflow.apply(pd.to_numeric, errors='coerce')
         
-        # Sort by date (most recent first)
+        # Sort by date
         income = income.sort_index(ascending=False)
         balance = balance.sort_index(ascending=False)
         cashflow = cashflow.sort_index(ascending=False)
         
-        # -------------------- Extract Key Metrics --------------------
-        # Income Statement
+        # Extract key metrics
         revenue = safe_get(income, ['Total Revenue', 'Revenue'])
-        gross_profit = safe_get(income, ['Gross Profit'])
-        operating_income = safe_get(income, ['Operating Income'])
         net_income = safe_get(income, ['Net Income'])
-        ebitda = safe_get(income, ['EBITDA'])
-        
-        # Balance Sheet
-        total_assets = safe_get(balance, ['Total Assets'])
-        current_assets = safe_get(balance, ['Current Assets'])
-        total_liabilities = safe_get(balance, ['Total Liabilities Net Minority Interest', 'Total Liabilities'])
-        current_liabilities = safe_get(balance, ['Current Liabilities'])
-        stockholder_equity = safe_get(balance, ['Total Equity Gross Minority Interest', 'Stockholders Equity', 'Total Stockholder Equity'])
-        long_term_debt = safe_get(balance, ['Long Term Debt'])
-        total_debt = safe_get(balance, ['Total Debt'])
-        cash_equiv = safe_get(balance, ['Cash And Cash Equivalents', 'Cash'])
-        
-        # Cash Flow Statement
-        operating_cf = safe_get(cashflow, ['Operating Cash Flow', 'Total Cash From Operating Activities'])
-        capex = safe_get(cashflow, ['Capital Expenditure', 'Capital Expenditures'])
-        investing_cf = safe_get(cashflow, ['Investing Cash Flow', 'Total Cash From Investing Activities'])
-        financing_cf = safe_get(cashflow, ['Financing Cash Flow', 'Total Cash From Financing Activities'])
-        
-        # Calculate Free Cash Flow (CapEx is usually negative, so we add it)
-        fcf = operating_cf + capex
-        
-        # Calculate Financial Metrics
-        revenue_yoy = calculate_yoy(revenue)
-        net_income_yoy = calculate_yoy(net_income)
-        
-        # Profitability Ratios
-        gross_margin = (gross_profit / revenue * 100).fillna(0)
-        operating_margin = (operating_income / revenue * 100).fillna(0)
-        net_margin = (net_income / revenue * 100).fillna(0)
-        roa = (net_income / total_assets * 100).fillna(0)
-        roe = (net_income / stockholder_equity * 100).fillna(0)
-        
-        # Liquidity Ratios
-        current_ratio = (current_assets / current_liabilities).fillna(0)
-        
-        # Leverage Ratios
-        debt_to_equity = (total_debt / stockholder_equity).fillna(0)
-        debt_to_assets = (total_debt / total_assets * 100).fillna(0)
-        
-        # Efficiency Ratios
-        asset_turnover = (revenue / total_assets).fillna(0)
         
         # Latest values
         latest_revenue = revenue.iloc[0] if len(revenue) > 0 else np.nan
         latest_net_income = net_income.iloc[0] if len(net_income) > 0 else np.nan
-        latest_fcf = fcf.iloc[0] if len(fcf) > 0 else np.nan
-        latest_net_margin = net_margin.iloc[0] if len(net_margin) > 0 else np.nan
-        latest_roe = roe.iloc[0] if len(roe) > 0 else np.nan
-        latest_debt_equity = debt_to_equity.iloc[0] if len(debt_to_equity) > 0 else np.nan
         
-        # Calculate CAGRs
-        revenue_cagr = calculate_cagr(revenue)
-        net_income_cagr = calculate_cagr(net_income)
+        # Calculate price change
+        hist = stock.history(period='1d')
+        if not hist.empty:
+            prev_close = hist['Close'].iloc[-1] if len(hist) > 0 else current_price
+            price_change = current_price - prev_close
+            price_change_pct = (price_change / prev_close * 100) if prev_close != 0 else 0
+        else:
+            price_change = 0
+            price_change_pct = 0
         
-        # -------------------- Company Header --------------------
+        # Company Header
         company_header = html.Div([
             html.Div([
+                # Left Section
                 html.Div([
-                    html.H2(f"{company_name}", style={"color": "#2c3e50", "marginBottom": "5px", "fontSize": "32px"}),
-                    html.H3(f"({ticker})", style={"color": "#7f8c8d", "marginBottom": "10px", "fontWeight": "normal"}),
+                    html.H1(company_name, style={'fontSize': '36px', 'marginBottom': '5px', 'color': colors['text']}),
+                    html.H2(f"({ticker})", style={'fontSize': '20px', 'color': colors['text'], 'opacity': '0.6', 'fontWeight': 'normal', 'marginBottom': '15px'}),
                     html.Div([
-                        html.Span(f"💼 {sector}", style={"marginRight": "20px", "color": "#555"}),
-                        html.Span(f"🏭 {industry}", style={"color": "#555"})
-                    ]),
-                ], style={"flex": "1"}),
+                        html.Span([
+                            html.Span("💼 ", style={'marginRight': '5px'}),
+                            html.Span(sector, style={'fontWeight': '500'})
+                        ], style={'marginRight': '20px', 'padding': '8px 15px', 'background': colors['card'], 'borderRadius': '20px', 'border': f'1px solid {colors["border"]}'}),
+                        html.Span([
+                            html.Span("🏭 ", style={'marginRight': '5px'}),
+                            html.Span(industry, style={'fontWeight': '500'})
+                        ], style={'padding': '8px 15px', 'background': colors['card'], 'borderRadius': '20px', 'border': f'1px solid {colors["border"]}'})
+                    ])
+                ], style={'flex': '1'}),
                 
+                # Right Section - Price
                 html.Div([
                     html.Div([
-                        html.H4("Market Cap", style={"color": "#7f8c8d", "fontSize": "14px", "marginBottom": "5px"}),
-                        html.H3(format_currency(market_cap), style={"color": "#667eea", "margin": "0"})
-                    ], style={"textAlign": "right", "marginRight": "30px"}),
-                    html.Div([
-                        html.H4("Stock Price", style={"color": "#7f8c8d", "fontSize": "14px", "marginBottom": "5px"}),
-                        html.H3(f"${current_price:.2f}" if current_price else "N/A", style={"color": "#2ecc71", "margin": "0"})
-                    ], style={"textAlign": "right"}),
-                ], style={"display": "flex"})
-            ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "center"})
+                        html.H1(f"${current_price:.2f}" if current_price else "N/A", style={
+                            'fontSize': '48px',
+                            'margin': '0',
+                            'color': colors['success'] if price_change >= 0 else colors['danger']
+                        }),
+                        html.Div([
+                            html.Span(f"{'▲' if price_change >= 0 else '▼'} ${abs(price_change):.2f}", style={
+                                'fontSize': '18px',
+                                'marginRight': '10px',
+                                'color': colors['success'] if price_change >= 0 else colors['danger']
+                            }),
+                            html.Span(f"({price_change_pct:+.2f}%)", style={
+                                'fontSize': '18px',
+                                'color': colors['success'] if price_change >= 0 else colors['danger']
+                            })
+                        ], style={'marginTop': '5px'})
+                    ], style={'textAlign': 'right'})
+                ], style={'marginLeft': 'auto'})
+            ], style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '30px'}),
+            
+            # Key Metrics Grid
+            html.Div([
+                create_stat_box("Market Cap", format_currency(market_cap), colors),
+                create_stat_box("P/E Ratio", format_number(pe_ratio) if pe_ratio else "N/A", colors),
+                create_stat_box("Dividend Yield", f"{dividend_yield*100:.2f}%" if dividend_yield else "N/A", colors),
+                create_stat_box("Beta", format_number(beta) if beta else "N/A", colors),
+                create_stat_box("52W High", f"${week_52_high:.2f}" if week_52_high else "N/A", colors),
+                create_stat_box("52W Low", f"${week_52_low:.2f}" if week_52_low else "N/A", colors),
+            ], style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(180px, 1fr))', 'gap': '15px'})
         ], style={
-            "padding": "30px", 
-            "background": "linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)",
-            "borderRadius": "15px",
-            "marginBottom": "30px",
-            "boxShadow": "0 4px 6px rgba(0,0,0,0.1)"
+            'padding': '40px',
+            'background': colors['card'],
+            'borderRadius': '20px',
+            'marginBottom': '30px',
+            'boxShadow': '0 4px 20px rgba(0,0,0,0.1)',
+            'border': f'1px solid {colors["border"]}'
         })
         
-        # -------------------- Key Metrics Cards --------------------
-        key_metrics = html.Div([
-            html.H3("📊 Key Performance Indicators", style={"color": "#2c3e50", "marginBottom": "20px", "fontSize": "24px"}),
-            html.Div([
-                create_metric_card("💰 Revenue", format_currency(latest_revenue), f"{revenue_cagr:.1f}% CAGR" if not pd.isna(revenue_cagr) else "N/A", "#667eea"),
-                create_metric_card("📈 Net Income", format_currency(latest_net_income), f"{net_income_cagr:.1f}% CAGR" if not pd.isna(net_income_cagr) else "N/A", "#2ecc71"),
-                create_metric_card("💵 Free Cash Flow", format_currency(latest_fcf), "Operating CF - CapEx", "#9b59b6"),
-                create_metric_card("🎯 Net Margin", f"{latest_net_margin:.2f}%" if not pd.isna(latest_net_margin) else "N/A", "Profitability", "#e67e22"),
-                create_metric_card("⚡ ROE", f"{latest_roe:.2f}%" if not pd.isna(latest_roe) else "N/A", "Return on Equity", "#3498db"),
-                create_metric_card("📊 Debt/Equity", f"{latest_debt_equity:.2f}x" if not pd.isna(latest_debt_equity) else "N/A", "Leverage Ratio", "#e74c3c"),
-            ], style={"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(250px, 1fr))", "gap": "20px"})
-        ], style={"marginBottom": "40px"})
-        
-        # -------------------- Create Interactive Tabs --------------------
-        tabs_content = html.Div([
-            dcc.Tabs(id="tabs", value='tab-1', children=[
-                dcc.Tab(label='📊 Revenue & Profitability', value='tab-1', style=tab_style, selected_style=tab_selected_style),
-                dcc.Tab(label='💰 Cash Flow Analysis', value='tab-2', style=tab_style, selected_style=tab_selected_style),
-                dcc.Tab(label='📈 Financial Ratios', value='tab-3', style=tab_style, selected_style=tab_selected_style),
-                dcc.Tab(label='⚖️ Balance Sheet Health', value='tab-4', style=tab_style, selected_style=tab_selected_style),
-            ], style={"marginBottom": "20px"}),
-            html.Div(id='tabs-content')
-        ])
-        
-        # Create all charts
-        charts_data = {
-            'tab-1': create_revenue_charts(ticker, revenue, gross_profit, operating_income, net_income, revenue_yoy, net_income_yoy, gross_margin, operating_margin, net_margin),
-            'tab-2': create_cashflow_charts(ticker, operating_cf, investing_cf, financing_cf, fcf, capex),
-            'tab-3': create_ratio_charts(ticker, net_margin, roa, roe, current_ratio, asset_turnover),
-            'tab-4': create_balance_charts(ticker, total_assets, total_liabilities, stockholder_equity, total_debt, cash_equiv, debt_to_equity, debt_to_assets)
-        }
-        
-        # Create tabs callback content
-        tabs_content = html.Div([
-            key_metrics,
-            dcc.Tabs(id="tabs-main", value='tab-1', children=[
-                dcc.Tab(label='📊 Revenue & Profitability', value='tab-1', style=tab_style, selected_style=tab_selected_style),
-                dcc.Tab(label='💰 Cash Flow Analysis', value='tab-2', style=tab_style, selected_style=tab_selected_style),
-                dcc.Tab(label='📈 Financial Ratios', value='tab-3', style=tab_style, selected_style=tab_selected_style),
-                dcc.Tab(label='⚖️ Balance Sheet Health', value='tab-4', style=tab_style, selected_style=tab_selected_style),
-            ], style={"marginBottom": "20px"}),
-            html.Div([
-                charts_data['tab-1'],
-                charts_data['tab-2'],
-                charts_data['tab-3'],
-                charts_data['tab-4']
-            ], id='all-charts')
-        ])
-        
-        # Add custom CSS for tab switching
-        tabs_content.children.append(html.Script("""
-            document.addEventListener('DOMContentLoaded', function() {
-                const tabs = document.querySelectorAll('[role="tab"]');
-                tabs.forEach((tab, index) => {
-                    tab.addEventListener('click', function() {
-                        const charts = document.querySelectorAll('#all-charts > div');
-                        charts.forEach(chart => chart.style.display = 'none');
-                        charts[index].style.display = 'block';
-                    });
-                });
-                // Show first tab by default
-                const charts = document.querySelectorAll('#all-charts > div');
-                charts.forEach((chart, i) => {
-                    chart.style.display = i === 0 ? 'block' : 'none';
-                });
-            });
-        """))
-        
-        return "", "", company_header, tabs_content
+        return "", "", {'display': 'none'}, {'display': 'block', 'padding': '20px 40px'}, company_header
         
     except Exception as e:
-        return "", f"❌ Error fetching data: {str(e)}", "", ""
+        return "", f"❌ Error: {str(e)}", {'display': 'block'}, {'display': 'none'}, ""
 
-# Tab styles
-tab_style = {
-    'borderBottom': '1px solid #d6d6d6',
-    'padding': '12px',
-    'fontWeight': 'bold',
-    'fontSize': '14px'
-}
-
-tab_selected_style = {
-    'borderTop': '3px solid #667eea',
-    'borderBottom': '1px solid #d6d6d6',
-    'backgroundColor': '#f0f0ff',
-    'color': '#667eea',
-    'padding': '12px',
-    'fontWeight': 'bold',
-    'fontSize': '14px'
-}
-
-def create_metric_card(title, value, subtitle, color):
-    """Create an enhanced metric card."""
+def create_stat_box(label, value, colors):
+    """Create a stat box for company header."""
     return html.Div([
-        html.Div(title, style={"fontSize": "16px", "color": "#7f8c8d", "marginBottom": "10px", "fontWeight": "600"}),
-        html.Div(value, style={"fontSize": "28px", "color": color, "fontWeight": "bold", "marginBottom": "5px"}),
-        html.Div(subtitle, style={"fontSize": "12px", "color": "#95a5a6"})
+        html.P(label, style={'fontSize': '12px', 'opacity': '0.6', 'marginBottom': '5px', 'textTransform': 'uppercase', 'letterSpacing': '1px'}),
+        html.P(value, style={'fontSize': '20px', 'fontWeight': 'bold', 'margin': '0'})
     ], style={
-        "padding": "25px",
-        "backgroundColor": "#f8f9fa",
-        "borderRadius": "12px",
-        "boxShadow": "0 2px 8px rgba(0,0,0,0.1)",
-        "transition": "transform 0.3s, box-shadow 0.3s",
-        "border": f"2px solid {color}20"
+        'padding': '15px',
+        'background': colors['background'],
+        'borderRadius': '10px',
+        'border': f'1px solid {colors["border"]}'
     })
 
-def create_revenue_charts(ticker, revenue, gross_profit, operating_income, net_income, revenue_yoy, net_income_yoy, gross_margin, operating_margin, net_margin):
-    """Create revenue and profitability charts."""
+# ==================== TAB CONTENT CALLBACK ====================
+@app.callback(
+    Output('tab-content', 'children'),
+    [Input('main-tabs', 'value'),
+     Input('ticker-input', 'value')],
+    [State('theme-store', 'data')]
+)
+def render_tab_content(active_tab, ticker, theme):
+    if not ticker:
+        return html.Div("Please enter a ticker symbol", style={'textAlign': 'center', 'padding': '50px'})
     
-    # Revenue breakdown
-    fig1 = go.Figure()
-    fig1.add_trace(go.Bar(x=revenue.index, y=revenue.values, name='Total Revenue', marker_color='#667eea'))
-    fig1.add_trace(go.Bar(x=gross_profit.index, y=gross_profit.values, name='Gross Profit', marker_color='#2ecc71'))
-    fig1.add_trace(go.Bar(x=operating_income.index, y=operating_income.values, name='Operating Income', marker_color='#f39c12'))
-    fig1.add_trace(go.Bar(x=net_income.index, y=net_income.values, name='Net Income', marker_color='#3498db'))
-    fig1.update_layout(
-        title=f"{ticker} - Revenue & Income Breakdown",
-        height=450,
-        xaxis_title="Period",
-        yaxis_title="Amount ($)",
+    colors = COLORS[theme]
+    ticker = ticker.upper().strip()
+    
+    try:
+        stock = yf.Ticker(ticker)
+        
+        if active_tab == 'overview':
+            return create_overview_tab(stock, ticker, colors)
+        elif active_tab == 'financials':
+            return create_financials_tab(stock, ticker, colors)
+        elif active_tab == 'technical':
+            return create_technical_tab(stock, ticker, colors)
+        elif active_tab == 'valuation':
+            return create_valuation_tab(stock, ticker, colors)
+        elif active_tab == 'comparison':
+            return create_comparison_tab(stock, ticker, colors)
+        elif active_tab == 'news':
+            return create_news_tab(stock, ticker, colors)
+            
+    except Exception as e:
+        return html.Div(f"Error loading tab: {str(e)}", style={'color': colors['danger'], 'padding': '20px'})
+
+# ==================== TAB CREATORS ====================
+def create_overview_tab(stock, ticker, colors):
+    """Create overview tab with key metrics and charts."""
+    try:
+        # Get historical data
+        hist = stock.history(period='1y')
+        info = stock.info
+        
+        # Price chart
+        fig_price = go.Figure()
+        fig_price.add_trace(go.Scatter(
+            x=hist.index, y=hist['Close'],
+            mode='lines',
+            name='Price',
+            line=dict(color=colors['primary'], width=2),
+            fill='tozeroy',
+            fillcolor=f'rgba(102, 126, 234, 0.1)'
+        ))
+        fig_price.update_layout(
+            title=f"{ticker} - 1 Year Price Chart",
+            height=400,
+            template='plotly_white' if colors == COLORS['light'] else 'plotly_dark',
+            paper_bgcolor=colors['card'],
+            plot_bgcolor=colors['card'],
+            font=dict(color=colors['text']),
+            hovermode='x unified'
+        )
+        
+        # Volume chart
+        fig_volume = go.Figure()
+        fig_volume.add_trace(go.Bar(
+            x=hist.index, y=hist['Volume'],
+            name='Volume',
+            marker_color=colors['info']
+        ))
+        fig_volume.update_layout(
+            title=f"{ticker} - Trading Volume",
+            height=300,
+            template='plotly_white' if colors == COLORS['light'] else 'plotly_dark',
+            paper_bgcolor=colors['card'],
+            plot_bgcolor=colors['card'],
+            font=dict(color=colors['text']),
+            hovermode='x unified'
+        )
+        
+        # Calculate returns
+        returns = hist['Close'].pct_change().dropna()
+        sharpe = calculate_sharpe_ratio(returns)
+        max_dd = calculate_max_drawdown(hist['Close'])
+        
+        return html.Div([
+            # Performance Metrics
+            html.Div([
+                html.H3("📊 Performance Metrics", style={'marginBottom': '20px', 'color': colors['text']}),
+                html.Div([
+                    create_metric_card("Sharpe Ratio", format_number(sharpe), "Risk-adjusted return", colors['info'], colors),
+                    create_metric_card("Max Drawdown", f"{max_dd:.2f}%" if not pd.isna(max_dd) else "N/A", "Peak to trough decline", colors['danger'], colors),
+                    create_metric_card("YTD Return", f"{((hist['Close'].iloc[-1] / hist['Close'].iloc[0] - 1) * 100):.2f}%", "Year to date performance", colors['success'], colors),
+                    create_metric_card("Volatility", f"{returns.std() * np.sqrt(252) * 100:.2f}%", "Annualized std dev", colors['warning'], colors),
+                ], style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(250px, 1fr))', 'gap': '20px', 'marginBottom': '30px'})
+            ]),
+            
+            # Charts
+            html.Div([
+                dcc.Graph(figure=fig_price, config={'displayModeBar': False}),
+                dcc.Graph(figure=fig_volume, config={'displayModeBar': False})
+            ])
+        ])
+        
+    except Exception as e:
+        return html.Div(f"Error: {str(e)}", style={'color': colors['danger']})
+
+def create_financials_tab(stock, ticker, colors):
+    """Create detailed financials tab."""
+    income = stock.financials.T.apply(pd.to_numeric, errors='coerce').sort_index(ascending=False)
+    balance = stock.balance_sheet.T.apply(pd.to_numeric, errors='coerce').sort_index(ascending=False)
+    cashflow = stock.cashflow.T.apply(pd.to_numeric, errors='coerce').sort_index(ascending=False)
+    
+    # Extract metrics
+    revenue = safe_get(income, ['Total Revenue', 'Revenue'])
+    gross_profit = safe_get(income, ['Gross Profit'])
+    operating_income = safe_get(income, ['Operating Income'])
+    net_income = safe_get(income, ['Net Income'])
+    
+    # Charts
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=revenue.index, y=revenue.values, name='Revenue', marker_color=colors['primary']))
+    fig.add_trace(go.Bar(x=gross_profit.index, y=gross_profit.values, name='Gross Profit', marker_color=colors['success']))
+    fig.add_trace(go.Bar(x=net_income.index, y=net_income.values, name='Net Income', marker_color=colors['info']))
+    
+    fig.update_layout(
+        title=f"{ticker} - Income Statement",
+        height=500,
+        template='plotly_white' if colors == COLORS['light'] else 'plotly_dark',
+        paper_bgcolor=colors['card'],
+        plot_bgcolor=colors['card'],
+        font=dict(color=colors['text']),
         barmode='group',
-        template='plotly_white',
-        hovermode='x unified'
-    )
-    
-    # YoY Growth
-    fig2 = go.Figure()
-    fig2.add_trace(go.Bar(x=revenue_yoy.index, y=revenue_yoy.values, name='Revenue YoY %', marker_color='#667eea'))
-    fig2.add_trace(go.Bar(x=net_income_yoy.index, y=net_income_yoy.values, name='Net Income YoY %', marker_color='#2ecc71'))
-    fig2.add_hline(y=0, line_dash="dash", line_color="gray")
-    fig2.update_layout(
-        title=f"{ticker} - Year-over-Year Growth Rate",
-        height=450,
-        xaxis_title="Period",
-        yaxis_title="Growth Rate (%)",
-        barmode='group',
-        template='plotly_white',
-        hovermode='x unified'
-    )
-    
-    # Profit Margins
-    fig3 = go.Figure()
-    fig3.add_trace(go.Scatter(x=gross_margin.index, y=gross_margin.values, mode='lines+markers', name='Gross Margin', line=dict(color='#2ecc71', width=3)))
-    fig3.add_trace(go.Scatter(x=operating_margin.index, y=operating_margin.values, mode='lines+markers', name='Operating Margin', line=dict(color='#f39c12', width=3)))
-    fig3.add_trace(go.Scatter(x=net_margin.index, y=net_margin.values, mode='lines+markers', name='Net Margin', line=dict(color='#3498db', width=3)))
-    fig3.update_layout(
-        title=f"{ticker} - Profit Margins Trend",
-        height=450,
-        xaxis_title="Period",
-        yaxis_title="Margin (%)",
-        template='plotly_white',
         hovermode='x unified'
     )
     
     return html.Div([
-        dcc.Graph(figure=fig1),
-        dcc.Graph(figure=fig2),
-        dcc.Graph(figure=fig3)
+        html.H3("💰 Financial Statements", style={'marginBottom': '20px', 'color': colors['text']}),
+        dcc.Graph(figure=fig, config={'displayModeBar': False})
     ])
 
-def create_cashflow_charts(ticker, operating_cf, investing_cf, financing_cf, fcf, capex):
-    """Create comprehensive cash flow charts."""
+def create_technical_tab(stock, ticker, colors):
+    """Create technical analysis tab."""
+    hist = stock.history(period='6mo')
     
-    # Cash Flow Waterfall
-    fig1 = go.Figure()
-    fig1.add_trace(go.Bar(x=operating_cf.index, y=operating_cf.values, name='Operating CF', marker_color='#2ecc71'))
-    fig1.add_trace(go.Bar(x=investing_cf.index, y=investing_cf.values, name='Investing CF', marker_color='#e74c3c'))
-    fig1.add_trace(go.Bar(x=financing_cf.index, y=financing_cf.values, name='Financing CF', marker_color='#f39c12'))
-    fig1.add_hline(y=0, line_dash="dash", line_color="gray")
-    fig1.update_layout(
-        title=f"{ticker} - Cash Flow Statement Breakdown",
-        height=450,
-        xaxis_title="Period",
-        yaxis_title="Cash Flow ($)",
-        barmode='relative',
-        template='plotly_white',
-        hovermode='x unified'
+    # Calculate technical indicators
+    hist['SMA_20'] = hist['Close'].rolling(window=20).mean()
+    hist['SMA_50'] = hist['Close'].rolling(window=50).mean()
+    hist['EMA_12'] = hist['Close'].ewm(span=12, adjust=False).mean()
+    hist['EMA_26'] = hist['Close'].ewm(span=26, adjust=False).mean()
+    
+    # MACD
+    hist['MACD'] = hist['EMA_12'] - hist['EMA_26']
+    hist['Signal'] = hist['MACD'].ewm(span=9, adjust=False).mean()
+    
+    # RSI
+    delta = hist['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    hist['RSI'] = 100 - (100 / (1 + rs))
+    
+    # Create subplots
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        row_heights=[0.5, 0.25, 0.25],
+        subplot_titles=(f'{ticker} Price & Moving Averages', 'MACD', 'RSI')
     )
     
-    # Free Cash Flow Analysis
-    fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(x=operating_cf.index, y=operating_cf.values, mode='lines+markers', name='Operating Cash Flow', 
-                              line=dict(color='#2ecc71', width=3), fill='tonexty'))
-    fig2.add_trace(go.Scatter(x=fcf.index, y=fcf.values, mode='lines+markers', name='Free Cash Flow',
-                              line=dict(color='#9b59b6', width=3), fill='tozeroy'))
-    fig2.add_trace(go.Bar(x=capex.index, y=capex.values, name='CapEx', marker_color='#e74c3c', opacity=0.6))
-    fig2.add_hline(y=0, line_dash="dash", line_color="gray")
-    fig2.update_layout(
-        title=f"{ticker} - Free Cash Flow Analysis (Operating CF - CapEx)",
-        height=450,
-        xaxis_title="Period",
-        yaxis_title="Amount ($)",
-        template='plotly_white',
-        hovermode='x unified'
-    )
+    # Price and MAs
+    fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], 
+                                  low=hist['Low'], close=hist['Close'], name='Price'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_20'], name='SMA 20', line=dict(color='orange')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_50'], name='SMA 50', line=dict(color='blue')), row=1, col=1)
     
-    # FCF Margin
-    fcf_copy = fcf.copy()
-    operating_cf_copy = operating_cf.copy()
-    fcf_margin = (fcf_copy / operating_cf_copy * 100).replace([np.inf, -np.inf], np.nan).fillna(0)
+    # MACD
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['MACD'], name='MACD', line=dict(color='blue')), row=2, col=1)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['Signal'], name='Signal', line=dict(color='orange')), row=2, col=1)
     
-    fig3 = go.Figure()
-    fig3.add_trace(go.Bar(x=fcf_margin.index, y=fcf_margin.values, name='FCF as % of Operating CF',
-                          marker_color='#667eea'))
-    fig3.add_hline(y=100, line_dash="dash", line_color="green", annotation_text="100%")
-    fig3.update_layout(
-        title=f"{ticker} - Free Cash Flow Efficiency",
-        height=450,
-        xaxis_title="Period",
-        yaxis_title="FCF / Operating CF (%)",
-        template='plotly_white',
-        hovermode='x unified'
+    # RSI
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['RSI'], name='RSI', line=dict(color='purple')), row=3, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+    
+    fig.update_layout(
+        height=900,
+        template='plotly_white' if colors == COLORS['light'] else 'plotly_dark',
+        paper_bgcolor=colors['card'],
+        plot_bgcolor=colors['card'],
+        font=dict(color=colors['text']),
+        showlegend=True,
+        xaxis_rangeslider_visible=False
     )
     
     return html.Div([
-        dcc.Graph(figure=fig1),
-        dcc.Graph(figure=fig2),
-        dcc.Graph(figure=fig3)
+        html.H3("📈 Technical Analysis", style={'marginBottom': '20px', 'color': colors['text']}),
+        html.Div([
+            create_metric_card("Current RSI", f"{hist['RSI'].iloc[-1]:.2f}" if not hist['RSI'].empty else "N/A", 
+                             "Overbought > 70, Oversold < 30", colors['info'], colors),
+            create_metric_card("MACD Signal", "Bullish" if hist['MACD'].iloc[-1] > hist['Signal'].iloc[-1] else "Bearish",
+                             "Momentum indicator", colors['success'] if hist['MACD'].iloc[-1] > hist['Signal'].iloc[-1] else colors['danger'], colors),
+            create_metric_card("20-Day SMA", f"${hist['SMA_20'].iloc[-1]:.2f}" if not hist['SMA_20'].empty else "N/A",
+                             "Short-term trend", colors['warning'], colors),
+        ], style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(250px, 1fr))', 'gap': '20px', 'marginBottom': '30px'}),
+        dcc.Graph(figure=fig, config={'displayModeBar': True})
     ])
 
-def create_ratio_charts(ticker, net_margin, roa, roe, current_ratio, asset_turnover):
-    """Create financial ratio charts."""
+def create_valuation_tab(stock, ticker, colors):
+    """Create valuation analysis tab."""
+    info = stock.info
+    income = stock.financials.T.apply(pd.to_numeric, errors='coerce').sort_index(ascending=False)
     
-    # Profitability Ratios
-    fig1 = go.Figure()
-    fig1.add_trace(go.Scatter(x=net_margin.index, y=net_margin.values, mode='lines+markers', name='Net Margin %', 
-                              line=dict(color='#3498db', width=3)))
-    fig1.add_trace(go.Scatter(x=roa.index, y=roa.values, mode='lines+markers', name='ROA %',
-                              line=dict(color='#2ecc71', width=3)))
-    fig1.add_trace(go.Scatter(x=roe.index, y=roe.values, mode='lines+markers', name='ROE %',
-                              line=dict(color='#9b59b6', width=3)))
-    fig1.update_layout(
-        title=f"{ticker} - Profitability Ratios",
-        height=450,
-        xaxis_title="Period",
-        yaxis_title="Percentage (%)",
-        template='plotly_white',
-        hovermode='x unified'
+    # Get valuation metrics
+    pe_ratio = info.get('trailingPE', np.nan)
+    forward_pe = info.get('forwardPE', np.nan)
+    peg_ratio = info.get('pegRatio', np.nan)
+    price_to_book = info.get('priceToBook', np.nan)
+    price_to_sales = info.get('priceToSalesTrailing12Months', np.nan)
+    ev_to_revenue = info.get('enterpriseToRevenue', np.nan)
+    ev_to_ebitda = info.get('enterpriseToEbitda', np.nan)
+    
+    # Get earnings data
+    net_income = safe_get(income, ['Net Income'])
+    revenue = safe_get(income, ['Total Revenue', 'Revenue'])
+    
+    # Calculate growth rates
+    revenue_growth = calculate_cagr(revenue)
+    earnings_growth = calculate_cagr(net_income)
+    
+    # Create valuation multiples chart
+    multiples_data = {
+        'Metric': ['P/E Ratio', 'Forward P/E', 'PEG Ratio', 'P/B Ratio', 'P/S Ratio', 'EV/Revenue', 'EV/EBITDA'],
+        'Value': [pe_ratio, forward_pe, peg_ratio, price_to_book, price_to_sales, ev_to_revenue, ev_to_ebitda]
+    }
+    
+    fig_multiples = go.Figure()
+    fig_multiples.add_trace(go.Bar(
+        x=multiples_data['Metric'],
+        y=multiples_data['Value'],
+        marker_color=colors['primary'],
+        text=[f"{v:.2f}" if not pd.isna(v) else "N/A" for v in multiples_data['Value']],
+        textposition='auto',
+    ))
+    
+    fig_multiples.update_layout(
+        title=f"{ticker} - Valuation Multiples",
+        height=400,
+        template='plotly_white' if colors == COLORS['light'] else 'plotly_dark',
+        paper_bgcolor=colors['card'],
+        plot_bgcolor=colors['card'],
+        font=dict(color=colors['text']),
+        yaxis_title="Multiple Value",
+        showlegend=False
     )
     
-    # Efficiency Ratios
-    fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(x=current_ratio.index, y=current_ratio.values, mode='lines+markers', name='Current Ratio',
-                              line=dict(color='#f39c12', width=3)))
-    fig2.add_hline(y=1, line_dash="dash", line_color="red", annotation_text="Threshold = 1")
-    fig2.add_hline(y=2, line_dash="dash", line_color="green", annotation_text="Healthy = 2")
-    fig2.update_layout(
-        title=f"{ticker} - Liquidity: Current Ratio",
-        height=450,
-        xaxis_title="Period",
-        yaxis_title="Ratio",
-        template='plotly_white',
-        hovermode='x unified'
-    )
+    # Growth rates chart
+    fig_growth = go.Figure()
+    fig_growth.add_trace(go.Bar(
+        x=['Revenue CAGR', 'Earnings CAGR'],
+        y=[revenue_growth, earnings_growth],
+        marker_color=[colors['success'], colors['info']],
+        text=[f"{revenue_growth:.2f}%" if not pd.isna(revenue_growth) else "N/A",
+              f"{earnings_growth:.2f}%" if not pd.isna(earnings_growth) else "N/A"],
+        textposition='auto',
+    ))
     
-    # Asset Turnover
-    fig3 = go.Figure()
-    fig3.add_trace(go.Bar(x=asset_turnover.index, y=asset_turnover.values, name='Asset Turnover',
-                          marker_color='#667eea'))
-    fig3.update_layout(
-        title=f"{ticker} - Asset Turnover Ratio",
-        height=450,
-        xaxis_title="Period",
-        yaxis_title="Times",
-        template='plotly_white',
-        hovermode='x unified'
+    fig_growth.update_layout(
+        title=f"{ticker} - Historical Growth Rates",
+        height=400,
+        template='plotly_white' if colors == COLORS['light'] else 'plotly_dark',
+        paper_bgcolor=colors['card'],
+        plot_bgcolor=colors['card'],
+        font=dict(color=colors['text']),
+        yaxis_title="CAGR (%)",
+        showlegend=False
     )
     
     return html.Div([
-        dcc.Graph(figure=fig1),
-        dcc.Graph(figure=fig2),
-        dcc.Graph(figure=fig3)
+        html.H3("🎯 Valuation Analysis", style={'marginBottom': '20px', 'color': colors['text']}),
+        
+        # Key valuation metrics
+        html.Div([
+            create_metric_card("P/E Ratio", f"{pe_ratio:.2f}" if not pd.isna(pe_ratio) else "N/A",
+                             "Price-to-Earnings", colors['primary'], colors),
+            create_metric_card("PEG Ratio", f"{peg_ratio:.2f}" if not pd.isna(peg_ratio) else "N/A",
+                             "P/E to Growth", colors['info'], colors),
+            create_metric_card("P/B Ratio", f"{price_to_book:.2f}" if not pd.isna(price_to_book) else "N/A",
+                             "Price-to-Book", colors['success'], colors),
+            create_metric_card("EV/EBITDA", f"{ev_to_ebitda:.2f}" if not pd.isna(ev_to_ebitda) else "N/A",
+                             "Enterprise Value Multiple", colors['warning'], colors),
+        ], style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(250px, 1fr))', 'gap': '20px', 'marginBottom': '30px'}),
+        
+        # Charts
+        html.Div([
+            html.Div([dcc.Graph(figure=fig_multiples, config={'displayModeBar': False})], style={'flex': '1'}),
+            html.Div([dcc.Graph(figure=fig_growth, config={'displayModeBar': False})], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '30px'}),
+        
+        # Valuation interpretation
+        html.Div([
+            html.H4("💡 Valuation Insights", style={'color': colors['text'], 'marginBottom': '15px'}),
+            html.Ul([
+                html.Li(f"P/E Ratio of {pe_ratio:.2f} suggests the stock is trading at {'a premium' if pe_ratio > 25 else 'a reasonable' if pe_ratio > 15 else 'a discount'} compared to market averages." if not pd.isna(pe_ratio) else "P/E ratio not available."),
+                html.Li(f"PEG Ratio of {peg_ratio:.2f} indicates {'potentially overvalued' if peg_ratio > 2 else 'fairly valued' if peg_ratio > 1 else 'potentially undervalued'} growth prospects." if not pd.isna(peg_ratio) else "PEG ratio not available."),
+                html.Li(f"Revenue growing at {revenue_growth:.2f}% CAGR over the historical period." if not pd.isna(revenue_growth) else "Revenue growth data not available."),
+            ], style={'color': colors['text'], 'opacity': '0.8', 'lineHeight': '1.8'})
+        ], style={
+            'padding': '25px',
+            'background': colors['card'],
+            'borderRadius': '15px',
+            'border': f'1px solid {colors["border"]}',
+            'boxShadow': '0 2px 10px rgba(0,0,0,0.05)'
+        })
     ])
 
-def create_balance_charts(ticker, total_assets, total_liabilities, stockholder_equity, total_debt, cash_equiv, debt_to_equity, debt_to_assets):
-    """Create balance sheet health charts."""
-    
-    # Balance Sheet Composition
-    fig1 = go.Figure()
-    fig1.add_trace(go.Bar(x=total_assets.index, y=total_assets.values, name='Total Assets', marker_color='#2ecc71'))
-    fig1.add_trace(go.Bar(x=total_liabilities.index, y=total_liabilities.values, name='Total Liabilities', marker_color='#e74c3c'))
-    fig1.add_trace(go.Bar(x=stockholder_equity.index, y=stockholder_equity.values, name='Stockholder Equity', marker_color='#3498db'))
-    fig1.update_layout(
-        title=f"{ticker} - Balance Sheet Structure",
-        height=450,
-        xaxis_title="Period",
-        yaxis_title="Amount ($)",
-        barmode='group',
-        template='plotly_white',
-        hovermode='x unified'
-    )
-    
-    # Debt vs Cash
-    fig2 = go.Figure()
-    fig2.add_trace(go.Bar(x=total_debt.index, y=total_debt.values, name='Total Debt', marker_color='#e74c3c'))
-    fig2.add_trace(go.Bar(x=cash_equiv.index, y=cash_equiv.values, name='Cash & Equivalents', marker_color='#2ecc71'))
-    net_debt = total_debt - cash_equiv
-    fig2.add_trace(go.Scatter(x=net_debt.index, y=net_debt.values, mode='lines+markers', name='Net Debt',
-                              line=dict(color='#9b59b6', width=3)))
-    fig2.add_hline(y=0, line_dash="dash", line_color="gray")
-    fig2.update_layout(
-        title=f"{ticker} - Debt Position Analysis",
-        height=450,
-        xaxis_title="Period",
-        yaxis_title="Amount ($)",
-        template='plotly_white',
-        hovermode='x unified'
-    )
-    
-    # Leverage Ratios
-    fig3 = go.Figure()
-    fig3.add_trace(go.Scatter(x=debt_to_equity.index, y=debt_to_equity.values, mode='lines+markers', name='Debt-to-Equity',
-                              line=dict(color='#e74c3c', width=3), fill='tozeroy'))
-    fig3.add_trace(go.Scatter(x=debt_to_assets.index, y=debt_to_assets.values, mode='lines+markers', name='Debt-to-Assets %',
-                              line=dict(color='#f39c12', width=3)))
-    fig3.add_hline(y=1, line_dash="dash", line_color="orange", annotation_text="D/E = 1")
-    fig3.update_layout(
-        title=f"{ticker} - Leverage Ratios Over Time",
-        height=450,
-        xaxis_title="Period",
-        yaxis_title="Ratio / Percentage",
-        template='plotly_white',
-        hovermode='x unified'
-    )
-    
+def create_comparison_tab(stock, ticker, colors):
+    """Create comparison tab for analyzing multiple stocks."""
     return html.Div([
-        dcc.Graph(figure=fig1),
-        dcc.Graph(figure=fig2),
-        dcc.Graph(figure=fig3)
+        html.H3("📊 Stock Comparison Tool", style={'marginBottom': '20px', 'color': colors['text']}),
+        
+        html.Div([
+            html.P("Compare multiple stocks side-by-side:", style={'marginBottom': '15px', 'color': colors['text']}),
+            html.Div([
+                dcc.Input(
+                    id='compare-ticker-1',
+                    type='text',
+                    placeholder='Ticker 1',
+                    style={
+                        'padding': '12px',
+                        'marginRight': '10px',
+                        'border': f'2px solid {colors["border"]}',
+                        'borderRadius': '8px',
+                        'background': colors['card'],
+                        'color': colors['text']
+                    }
+                ),
+                dcc.Input(
+                    id='compare-ticker-2',
+                    type='text',
+                    placeholder='Ticker 2',
+                    style={
+                        'padding': '12px',
+                        'marginRight': '10px',
+                        'border': f'2px solid {colors["border"]}',
+                        'borderRadius': '8px',
+                        'background': colors['card'],
+                        'color': colors['text']
+                    }
+                ),
+                dcc.Input(
+                    id='compare-ticker-3',
+                    type='text',
+                    placeholder='Ticker 3',
+                    style={
+                        'padding': '12px',
+                        'marginRight': '10px',
+                        'border': f'2px solid {colors["border"]}',
+                        'borderRadius': '8px',
+                        'background': colors['card'],
+                        'color': colors['text']
+                    }
+                ),
+                html.Button("Compare", id='compare-button', n_clicks=0, style={
+                    'padding': '12px 30px',
+                    'background': colors['primary'],
+                    'color': 'white',
+                    'border': 'none',
+                    'borderRadius': '8px',
+                    'cursor': 'pointer',
+                    'fontWeight': 'bold'
+                })
+            ], style={'marginBottom': '30px'}),
+            
+            html.Div(id='comparison-output')
+        ], style={
+            'padding': '30px',
+            'background': colors['card'],
+            'borderRadius': '15px',
+            'border': f'1px solid {colors["border"]}',
+            'boxShadow': '0 2px 10px rgba(0,0,0,0.05)'
+        })
     ])
 
+def create_news_tab(stock, ticker, colors):
+    """Create news and events tab."""
+    try:
+        news = stock.news[:10] if hasattr(stock, 'news') else []
+        
+        news_items = []
+        for item in news:
+            news_items.append(
+                html.Div([
+                    html.A([
+                        html.H4(item.get('title', 'No Title'), style={
+                            'color': colors['primary'],
+                            'marginBottom': '8px',
+                            'fontSize': '18px'
+                        }),
+                    ], href=item.get('link', '#'), target='_blank', style={'textDecoration': 'none'}),
+                    html.P(item.get('publisher', 'Unknown Source'), style={
+                        'fontSize': '12px',
+                        'color': colors['text'],
+                        'opacity': '0.6',
+                        'marginBottom': '10px'
+                    }),
+                    html.P(item.get('summary', '')[:200] + '...' if item.get('summary') else '', style={
+                        'color': colors['text'],
+                        'opacity': '0.8',
+                        'lineHeight': '1.6'
+                    })
+                ], style={
+                    'padding': '20px',
+                    'background': colors['card'],
+                    'borderRadius': '12px',
+                    'marginBottom': '15px',
+                    'border': f'1px solid {colors["border"]}',
+                    'boxShadow': '0 2px 8px rgba(0,0,0,0.05)',
+                    'transition': 'transform 0.2s',
+                    'cursor': 'pointer'
+                })
+            )
+        
+        return html.Div([
+            html.H3(f"📰 Latest News for {ticker}", style={'marginBottom': '25px', 'color': colors['text']}),
+            html.Div(news_items if news_items else html.P("No news available", style={'color': colors['text'], 'textAlign': 'center', 'padding': '50px'}))
+        ])
+    except:
+        return html.Div([
+            html.H3(f"📰 Latest News for {ticker}", style={'marginBottom': '25px', 'color': colors['text']}),
+            html.P("News data temporarily unavailable", style={'color': colors['text'], 'textAlign': 'center', 'padding': '50px'})
+        ])
+
+# ==================== COMPARISON CALLBACK ====================
+@app.callback(
+    Output('comparison-output', 'children'),
+    [Input('compare-button', 'n_clicks')],
+    [State('compare-ticker-1', 'value'),
+     State('compare-ticker-2', 'value'),
+     State('compare-ticker-3', 'value'),
+     State('theme-store', 'data')]
+)
+def compare_stocks(n_clicks, ticker1, ticker2, ticker3, theme):
+    if not n_clicks or not ticker1:
+        return html.Div()
+    
+    colors = COLORS[theme]
+    tickers = [t.upper().strip() for t in [ticker1, ticker2, ticker3] if t]
+    
+    try:
+        comparison_data = []
+        
+        for ticker in tickers:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            hist = stock.history(period='1y')
+            
+            comparison_data.append({
+                'Ticker': ticker,
+                'Price': f"${info.get('currentPrice', 0):.2f}",
+                'Market Cap': format_currency(info.get('marketCap', 0)),
+                'P/E Ratio': f"{info.get('trailingPE', 0):.2f}" if info.get('trailingPE') else "N/A",
+                'Dividend Yield': f"{info.get('dividendYield', 0)*100:.2f}%" if info.get('dividendYield') else "N/A",
+                '1Y Return': f"{((hist['Close'].iloc[-1] / hist['Close'].iloc[0] - 1) * 100):.2f}%" if len(hist) > 0 else "N/A"
+            })
+        
+        # Create comparison table
+        df = pd.DataFrame(comparison_data)
+        
+        table = dash_table.DataTable(
+            data=df.to_dict('records'),
+            columns=[{'name': i, 'id': i} for i in df.columns],
+            style_cell={
+                'textAlign': 'left',
+                'padding': '15px',
+                'backgroundColor': colors['card'],
+                'color': colors['text'],
+                'border': f'1px solid {colors["border"]}'
+            },
+            style_header={
+                'backgroundColor': colors['primary'],
+                'color': 'white',
+                'fontWeight': 'bold',
+                'textAlign': 'left',
+                'padding': '15px'
+            },
+            style_data_conditional=[
+                {
+                    'if': {'row_index': 'odd'},
+                    'backgroundColor': colors['background']
+                }
+            ]
+        )
+        
+        # Create comparison chart
+        fig = go.Figure()
+        for ticker in tickers:
+            hist = yf.Ticker(ticker).history(period='1y')
+            normalized = (hist['Close'] / hist['Close'].iloc[0]) * 100
+            fig.add_trace(go.Scatter(
+                x=hist.index,
+                y=normalized,
+                mode='lines',
+                name=ticker,
+                line=dict(width=3)
+            ))
+        
+        fig.update_layout(
+            title="Normalized Price Comparison (Base = 100)",
+            height=400,
+            template='plotly_white' if colors == COLORS['light'] else 'plotly_dark',
+            paper_bgcolor=colors['card'],
+            plot_bgcolor=colors['card'],
+            font=dict(color=colors['text']),
+            hovermode='x unified',
+            yaxis_title="Normalized Price",
+            xaxis_title="Date"
+        )
+        
+        return html.Div([
+            html.H4("Comparison Table", style={'color': colors['text'], 'marginBottom': '20px'}),
+            table,
+            html.Div(style={'height': '30px'}),
+            dcc.Graph(figure=fig, config={'displayModeBar': False})
+        ])
+        
+    except Exception as e:
+        return html.Div(f"Error comparing stocks: {str(e)}", style={'color': colors['danger'], 'padding': '20px'})
+
+# ==================== RUN APP ====================
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 8050))
