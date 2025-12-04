@@ -1014,6 +1014,10 @@ def compare_stocks(n_clicks, ticker1, ticker2, ticker3, theme):
     except Exception as e:
         return html.Div(f"Error comparing stocks: {str(e)}", style={'color': colors['danger'], 'padding': '20px'})
 
+# ==================== SERVER EXPORT ====================
+# Export server for Gunicorn
+server = app.server
+
 # ==================== RUN APP ====================
 if __name__ == "__main__":
     import os
