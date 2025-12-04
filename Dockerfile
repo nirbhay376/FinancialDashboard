@@ -19,6 +19,6 @@ COPY . /app
 ENV PORT=8050
 
 # Use shell form so $PORT expands at runtime
-CMD ["sh", "-c", "gunicorn finance:server --workers 4 --worker-class gevent --bind 0.0.0.0:$PORT"]
+CMD ["sh", "-c", "gunicorn finance:server --workers 1 --worker-class gevent --bind 0.0.0.0:$PORT"]
 
 EXPOSE 8050
