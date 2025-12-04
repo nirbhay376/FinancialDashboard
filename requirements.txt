@@ -3,3 +3,7 @@ plotly
 pandas
 numpy
 yfinance
+
+# Production server
+gunicorn
+gevent
