@@ -1,12 +1,52 @@
-# Python cache files
+# ===== Python cache =====
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# Virtual environments
+# ===== Virtual environment =====
 venv/
-.env/
+ENV/
+env/
 
-# Dash / Plotly / Jupyter temp files
-*.ipynb_checkpoints
+# ===== Databases / local data =====
+*.db
+*.sqlite3
+
+# ===== Environment variables / secrets =====
+.env
+.env.*
+*.env
+
+# ===== OS / editor junk =====
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ===== Build / packaging =====
+build/
+dist/
+*.egg-info/
+
+# ===== Logs =====
+*.log
+logs/
+
+# ===== Python test caches =====
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ===== Docker =====
+# (Keep Dockerfile, ignore build outputs)
+*.tar
+*.img
+
+# ===== Node (if any future JS) =====
+node_modules/
+npm-debug.log
+
+# ===== Misc =====
+*.bak
+*.tmp
